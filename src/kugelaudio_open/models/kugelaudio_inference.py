@@ -162,8 +162,12 @@ class KugelAudioForConditionalGenerationInference(KugelAudioPreTrainedModel, Gen
             [num_valid_frames, hidden] - already indexed by speech_masks for direct
             assignment to inputs_embeds[speech_input_mask].
         """
-        device = next(self.parameters()).device
-        dtype = next(self.parameters()).dtype
+        # Detect device — with device_map="auto", use the acoustic connector's device
+        if hasattr(self, "hf_device_map"):
+            device = next(self.acoustic_connector.parameters()).device
+        else:
+            device = next(self.parameters()).device
+        dtype = torch.bfloat16 if device.type == "cuda" else torch.float32
 
         # Use pre-encoded voice features (acoustic only)
         acoustic_mean = voice_cache["acoustic_mean"].to(device=device, dtype=dtype)
@@ -320,8 +324,16 @@ class KugelAudioForConditionalGenerationInference(KugelAudioPreTrainedModel, Gen
         Returns:
             KugelAudioGenerationOutput with sequences and speech_outputs
         """
-        device = next(self.parameters()).device
-        dtype = next(self.parameters()).dtype
+        # Detect compute device — with device_map="auto", parameters may be
+        # split across devices, so we look for the first GPU parameter
+        if hasattr(self, "hf_device_map"):
+            # Model loaded with device_map="auto": find the GPU device
+            devices = set(self.hf_device_map.values())
+            gpu_devices = [d for d in devices if d not in ("cpu", "disk")]
+            device = torch.device(gpu_devices[0] if gpu_devices else "cuda")
+        else:
+            device = next(self.parameters()).device
+        dtype = torch.bfloat16 if device.type == "cuda" else torch.float32
 
         # Handle input_ids vs text_ids
         if text_ids is None and input_ids is not None:

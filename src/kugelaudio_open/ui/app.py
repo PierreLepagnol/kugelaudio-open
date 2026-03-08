@@ -204,9 +204,14 @@ def generate_speech(
     model_id = f"kugelaudio/{model_choice}"
     model, processor, watermark = load_models(model_id)
 
-    # In low-VRAM mode, model is a LowVRAMInferenceWrapper (not nn.Module)
+    # Detect compute device based on loading mode
     if _low_vram_mode:
         device = model.device
+    elif hasattr(model, "hf_device_map"):
+        # Quantized model with device_map="auto" — find the GPU device
+        devices = set(model.hf_device_map.values())
+        gpu_devices = [d for d in devices if d not in ("cpu", "disk")]
+        device = gpu_devices[0] if gpu_devices else next(model.parameters()).device
     else:
         device = next(model.parameters()).device
 

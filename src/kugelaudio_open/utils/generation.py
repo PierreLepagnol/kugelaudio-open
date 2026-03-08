@@ -95,7 +95,12 @@ def generate_speech(
         >>> processor.save_audio(audio, "output.wav")
     """
     if device is None:
-        device = next(model.parameters()).device
+        if hasattr(model, "hf_device_map"):
+            devices = set(model.hf_device_map.values())
+            gpu_devices = [d for d in devices if d not in ("cpu", "disk")]
+            device = gpu_devices[0] if gpu_devices else next(model.parameters()).device
+        else:
+            device = next(model.parameters()).device
 
     # Process inputs with optional pre-encoded voice
     inputs = processor(text=text, voice=voice, return_tensors="pt")

@@ -758,11 +758,13 @@ def load_model_quantized(
 ) -> KugelAudioForConditionalGenerationInference:
     """Load KugelAudio model with 4-bit quantization (bitsandbytes NF4).
 
-    The quantized model lives entirely on GPU (~3.5GB VRAM for a 7B model)
-    and uses only ~4GB of system RAM during loading.
+    Uses device_map="auto" to distribute layers between GPU and CPU based
+    on available VRAM. Quantized transformer layers go to GPU first; any
+    overflow (embeddings, encoder weights) stays on CPU and is moved on
+    the fly by accelerate hooks.
 
     This is the best option when you have limited RAM (<16GB) and a GPU
-    with at least 6GB VRAM.
+    with 6GB+ VRAM.
 
     Requires: pip install bitsandbytes
 
@@ -771,7 +773,7 @@ def load_model_quantized(
         device: GPU device to use (default: "cuda").
 
     Returns:
-        KugelAudioForConditionalGenerationInference with quantized weights on GPU.
+        KugelAudioForConditionalGenerationInference with quantized weights.
 
     Example:
         >>> from kugelaudio_open.models.low_vram import load_model_quantized
@@ -797,7 +799,6 @@ def load_model_quantized(
         )
 
     logger.info(f"Loading model {model_id} with 4-bit quantization (NF4)...")
-    logger.info("This uses ~3.5GB VRAM and ~4GB RAM — ideal for low-memory systems.")
 
     quantization_config = BitsAndBytesConfig(
         load_in_4bit=True,
@@ -806,10 +807,23 @@ def load_model_quantized(
         bnb_4bit_use_double_quant=True,  # nested quantization saves a bit more
     )
 
+    # Detect available GPU memory and leave ~1.5GB headroom for inference
+    # (KV cache activations, diffusion sampling, audio decode, watermark)
+    if torch.cuda.is_available():
+        gpu_mem_gb = torch.cuda.get_device_properties(0).total_mem / (1024**3)
+        max_gpu = f"{max(gpu_mem_gb - 1.5, 2.0):.1f}GiB"
+        logger.info(
+            f"GPU has {gpu_mem_gb:.1f}GB total, limiting model to {max_gpu} "
+            f"(leaving ~1.5GB for inference)"
+        )
+    else:
+        max_gpu = "4GiB"
+
     model = KugelAudioForConditionalGenerationInference.from_pretrained(
         model_id,
         quantization_config=quantization_config,
-        device_map=device,
+        device_map="auto",
+        max_memory={0: max_gpu, "cpu": "24GiB"},
         torch_dtype=torch.bfloat16,
     )
     model.eval()

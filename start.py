@@ -171,11 +171,20 @@ Examples:
 
         processor = KugelAudioProcessor.from_pretrained(args.model)
 
+        # Detect actual compute device (may differ with device_map="auto")
+        if hasattr(model, "hf_device_map"):
+            devices = set(model.hf_device_map.values())
+            gpu_devices = [d for d in devices if d not in ("cpu", "disk")]
+            compute_device = gpu_devices[0] if gpu_devices else device
+        else:
+            compute_device = device
+
         # Process inputs — move to GPU unless using low-vram offloading (wrapper handles it)
         inputs = processor(text=args.text, voice_prompt=args.reference, return_tensors="pt")
         if not use_low_vram:
             inputs = {
-                k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in inputs.items()
+                k: v.to(compute_device) if isinstance(v, torch.Tensor) else v
+                for k, v in inputs.items()
             }
 
         print("Generating speech...")
