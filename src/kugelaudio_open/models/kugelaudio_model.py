@@ -76,7 +76,7 @@ class KugelAudioPreTrainedModel(PreTrainedModel):
     config_class = KugelAudioConfig
     base_model_prefix = "model"
     supports_gradient_checkpointing = True
-    _skip_keys_device_placement = "past_key_values"
+    _skip_keys_device_placement = ["past_key_values", "speech_bias_factor", "speech_scaling_factor"]
     _supports_cache_class = True
     _supports_flash_attn_2 = True
     _supports_sdpa = True
@@ -277,7 +277,6 @@ class KugelAudioModel(KugelAudioPreTrainedModel):
         cache_position: Optional[torch.LongTensor] = None,
         **kwargs,
     ) -> Union[Tuple, BaseModelOutputWithPast]:
-
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
         # Forward through language model
@@ -503,7 +502,6 @@ class KugelAudioForConditionalGeneration(KugelAudioPreTrainedModel):
         ddpm_batch_mul: int = 1,
         **kwargs: Optional[Dict[str, Union[torch.Tensor, str]]],
     ) -> Union[Tuple, KugelAudioCausalLMOutputWithPast]:
-
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
         x = self.get_input_embeddings()(input_ids)
@@ -530,7 +528,9 @@ class KugelAudioForConditionalGeneration(KugelAudioPreTrainedModel):
                     if acoustic_input_mask is not None:
                         assert speech_connect_features.shape[0] == int(
                             acoustic_input_mask.sum().item()
-                        ), f"Mismatch between selected speech connectors ({speech_connect_features.shape[0]}) and acoustic_input_mask sum ({int(acoustic_input_mask.sum().item())})"
+                        ), (
+                            f"Mismatch between selected speech connectors ({speech_connect_features.shape[0]}) and acoustic_input_mask sum ({int(acoustic_input_mask.sum().item())})"
+                        )
                 except Exception:
                     pass
         else:
@@ -578,9 +578,9 @@ class KugelAudioForConditionalGeneration(KugelAudioPreTrainedModel):
             speech_len, latent_size = speech_features.shape
             # Sanity check: ensure 1:1 alignment between selected conditions and latents
             try:
-                assert (
-                    condition_features.shape[0] == speech_len
-                ), f"Mismatch: condition_features={condition_features.shape[0]} vs speech_features={speech_len}"
+                assert condition_features.shape[0] == speech_len, (
+                    f"Mismatch: condition_features={condition_features.shape[0]} vs speech_features={speech_len}"
+                )
             except Exception:
                 pass
 
