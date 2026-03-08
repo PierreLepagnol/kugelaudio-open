@@ -11,11 +11,11 @@ Usage:
     python start.py
     python start.py ui
     python start.py ui --share  # With public link
-    
+
     # Generate speech
     python start.py generate "Hello world!" -o output.wav
     python start.py generate "Clone my voice" -r reference.wav -o cloned.wav
-    
+
     # Verify watermark
     python start.py verify audio.wav
 """
@@ -51,9 +51,18 @@ Examples:
     # UI command (default)
     ui_parser = subparsers.add_parser("ui", help="Launch Gradio web interface")
     ui_parser.add_argument("--share", action="store_true", help="Create public share link")
-    ui_parser.add_argument("--host", default="127.0.0.1", help="Server hostname (use 0.0.0.0 for network access)")
+    ui_parser.add_argument(
+        "--host", default="127.0.0.1", help="Server hostname (use 0.0.0.0 for network access)"
+    )
     ui_parser.add_argument("--port", type=int, default=7860, help="Server port")
-    ui_parser.add_argument("--model", default="kugelaudio/kugelaudio-0-open", help="Default model to load")
+    ui_parser.add_argument(
+        "--model", default="kugelaudio/kugelaudio-0-open", help="Default model to load"
+    )
+    ui_parser.add_argument(
+        "--low-vram",
+        action="store_true",
+        help="Enable low-VRAM mode (~3-4GB VRAM, slower inference)",
+    )
 
     # Generate command
     gen_parser = subparsers.add_parser("generate", help="Generate speech from text")
@@ -61,8 +70,17 @@ Examples:
     gen_parser.add_argument("-o", "--output", default="output.wav", help="Output file path")
     gen_parser.add_argument("-r", "--reference", help="Reference audio for voice cloning")
     gen_parser.add_argument("--model", default="kugelaudio/kugelaudio-0-open", help="Model ID")
-    gen_parser.add_argument("--cfg-scale", type=float, default=3.0, help="Guidance scale (1.0-10.0)")
-    gen_parser.add_argument("--max-tokens", type=int, default=4096, help="Maximum generation tokens")
+    gen_parser.add_argument(
+        "--cfg-scale", type=float, default=3.0, help="Guidance scale (1.0-10.0)"
+    )
+    gen_parser.add_argument(
+        "--max-tokens", type=int, default=4096, help="Maximum generation tokens"
+    )
+    gen_parser.add_argument(
+        "--low-vram",
+        action="store_true",
+        help="Enable low-VRAM mode (~3-4GB VRAM, slower inference)",
+    )
 
     # Verify command
     verify_parser = subparsers.add_parser("verify", help="Check watermark in audio")
@@ -77,24 +95,28 @@ Examples:
         args.host = "127.0.0.1"
         args.port = 7860
         args.model = "kugelaudio/kugelaudio-0-open"
+        args.low_vram = False
 
     if args.command == "ui":
         print("🎙️ Starting KugelAudio Web Interface...")
         print(f"   Host: {args.host}")
         print(f"   Port: {args.port}")
         print(f"   Share: {args.share}")
+        if args.low_vram:
+            print(f"   Mode: Low-VRAM (offloading to CPU, ~3-4GB VRAM)")
         print()
-        
+
         from kugelaudio_open.ui import launch_app
+
         launch_app(
             share=args.share,
             server_name=args.host,
             server_port=args.port,
+            low_vram=args.low_vram,
         )
 
     elif args.command == "generate":
         import torch
-        from kugelaudio_open.models import KugelAudioForConditionalGenerationInference
         from kugelaudio_open.processors import KugelAudioProcessor
 
         device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -103,26 +125,34 @@ Examples:
         print(f"🎙️ KugelAudio Speech Generation")
         print(f"   Model: {args.model}")
         print(f"   Device: {device}")
+        if args.low_vram:
+            print(f"   Mode: Low-VRAM (offloading to CPU, ~3-4GB VRAM)")
         print(f"   Text: {args.text[:50]}..." if len(args.text) > 50 else f"   Text: {args.text}")
         if args.reference:
             print(f"   Reference: {args.reference}")
         print()
 
         print("Loading model...")
-        model = KugelAudioForConditionalGenerationInference.from_pretrained(
-            args.model, torch_dtype=dtype
-        ).to(device)
-        model.eval()
+        if args.low_vram and device == "cuda":
+            from kugelaudio_open.models import load_model_low_vram
+
+            model = load_model_low_vram(args.model, device=device)
+        else:
+            from kugelaudio_open.models import KugelAudioForConditionalGenerationInference
+
+            model = KugelAudioForConditionalGenerationInference.from_pretrained(
+                args.model, torch_dtype=dtype
+            ).to(device)
+            model.eval()
 
         processor = KugelAudioProcessor.from_pretrained(args.model)
 
         # Process inputs
-        inputs = processor(
-            text=args.text,
-            voice_prompt=args.reference,
-            return_tensors="pt"
-        )
-        inputs = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in inputs.items()}
+        inputs = processor(text=args.text, voice_prompt=args.reference, return_tensors="pt")
+        if not args.low_vram:
+            inputs = {
+                k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in inputs.items()
+            }
 
         print("Generating speech...")
         with torch.no_grad():

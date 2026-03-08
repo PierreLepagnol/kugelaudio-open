@@ -31,6 +31,8 @@ from .models import (
     KugelAudioModel,
     KugelAudioPreTrainedModel,
     KugelAudioSemanticTokenizerModel,
+    LowVRAMInferenceWrapper,
+    load_model_low_vram,
 )
 from .processors import KugelAudioProcessor
 from .schedule import DPMSolverMultistepScheduler
@@ -46,7 +48,7 @@ def launch_ui(*args, **kwargs):
         return _launch_ui(*args, **kwargs)
     except ImportError:
         raise ImportError(
-            "Gradio is required for the web interface. " "Install it with: pip install gradio"
+            "Gradio is required for the web interface. Install it with: pip install gradio"
         )
 
 
@@ -66,6 +68,9 @@ __all__ = [
     "KugelAudioAcousticTokenizerModel",
     "KugelAudioSemanticTokenizerModel",
     "KugelAudioDiffusionHead",
+    # Low-VRAM inference
+    "LowVRAMInferenceWrapper",
+    "load_model_low_vram",
     # Scheduler
     "DPMSolverMultistepScheduler",
     # Processors

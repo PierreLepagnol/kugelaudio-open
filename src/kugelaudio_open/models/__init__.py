@@ -23,6 +23,7 @@ from .conv_layers import (
     SConv1d,
     SConvTranspose1d,
 )
+from .low_vram import LowVRAMInferenceWrapper, load_model_low_vram
 
 __all__ = [
     # Main models
@@ -30,6 +31,9 @@ __all__ = [
     "KugelAudioPreTrainedModel",
     "KugelAudioForConditionalGeneration",
     "KugelAudioForConditionalGenerationInference",
+    # Low-VRAM inference
+    "LowVRAMInferenceWrapper",
+    "load_model_low_vram",
     # Outputs
     "KugelAudioCausalLMOutputWithPast",
     "KugelAudioGenerationOutput",

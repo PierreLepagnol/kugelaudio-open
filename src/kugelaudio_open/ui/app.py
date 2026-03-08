@@ -22,6 +22,7 @@ _model = None
 _processor = None
 _watermark = None
 _current_model_id = None  # Track which model is loaded
+_low_vram_mode = False  # Whether to use low-VRAM offloading
 
 
 def get_device():
@@ -99,9 +100,8 @@ def _warmup_model(model, processor=None):
 
 def load_models(model_id: str = "kugelaudio/kugelaudio-0-open"):
     """Load model and processor. Switches model if a different model_id is requested."""
-    global _model, _processor, _watermark, _current_model_id
+    global _model, _processor, _watermark, _current_model_id, _low_vram_mode
 
-    from kugelaudio_open.models import KugelAudioForConditionalGenerationInference
     from kugelaudio_open.processors import KugelAudioProcessor
     from kugelaudio_open.watermark import AudioWatermark
 
@@ -121,30 +121,40 @@ def load_models(model_id: str = "kugelaudio/kugelaudio-0-open"):
             if device == "cuda":
                 torch.cuda.empty_cache()
 
-        print(f"Loading model {model_id} on {device}...")
-        try:
-            _model = KugelAudioForConditionalGenerationInference.from_pretrained(
-                model_id,
-                torch_dtype=dtype,
-                attn_implementation="flash_attention_2" if device == "cuda" else "sdpa",
-            ).to(device)
-        except Exception:
-            _model = KugelAudioForConditionalGenerationInference.from_pretrained(
-                model_id,
-                torch_dtype=dtype,
-            ).to(device)
-        _model.eval()
-        # Strip encoder weights to free VRAM (only decoder needed for inference)
-        _model.model.strip_encoders()
-        _current_model_id = model_id
-        print(f"Model {model_id} loaded!")
+        if _low_vram_mode and device == "cuda":
+            from kugelaudio_open.models import load_model_low_vram
+
+            print(f"Loading model {model_id} in LOW-VRAM mode (CPU offloading)...")
+            _model = load_model_low_vram(model_id, device=device)
+            _current_model_id = model_id
+            print(f"Model {model_id} loaded in low-VRAM mode!")
+        else:
+            from kugelaudio_open.models import KugelAudioForConditionalGenerationInference
+
+            print(f"Loading model {model_id} on {device}...")
+            try:
+                _model = KugelAudioForConditionalGenerationInference.from_pretrained(
+                    model_id,
+                    torch_dtype=dtype,
+                    attn_implementation="flash_attention_2" if device == "cuda" else "sdpa",
+                ).to(device)
+            except Exception:
+                _model = KugelAudioForConditionalGenerationInference.from_pretrained(
+                    model_id,
+                    torch_dtype=dtype,
+                ).to(device)
+            _model.eval()
+            # Strip encoder weights to free VRAM (only decoder needed for inference)
+            _model.model.strip_encoders()
+            _current_model_id = model_id
+            print(f"Model {model_id} loaded!")
 
     if _processor is None:
         _processor = KugelAudioProcessor.from_pretrained(model_id)
 
     # Warmup to eliminate first-generation slowness from CUDA kernel compilation
-    # Do this after processor is loaded so we can run a mini-generation
-    if device == "cuda" and _model is not None:
+    # Skip warmup in low-VRAM mode (offloading makes warmup counterproductive)
+    if device == "cuda" and _model is not None and not _low_vram_mode:
         # Check if we need to warmup (only on first load)
         if not getattr(_model, "_warmed_up", False):
             print("Warming up model (this may take a moment)...")
@@ -185,7 +195,12 @@ def generate_speech(
 
     model_id = f"kugelaudio/{model_choice}"
     model, processor, watermark = load_models(model_id)
-    device = next(model.parameters()).device
+
+    # In low-VRAM mode, model is a LowVRAMInferenceWrapper (not nn.Module)
+    if _low_vram_mode:
+        device = model.device
+    else:
+        device = next(model.parameters()).device
 
     # Process text input with optional pre-encoded voice
     if voice_name and voice_name != "None":
@@ -194,9 +209,10 @@ def generate_speech(
         inputs = processor(text=text.strip(), return_tensors="pt")
 
     # Move tensors to device, keep dicts as-is
+    # In low-VRAM mode, the wrapper handles device placement internally
     model_inputs = {}
     for k, v in inputs.items():
-        if isinstance(v, torch.Tensor):
+        if isinstance(v, torch.Tensor) and not _low_vram_mode:
             model_inputs[k] = v.to(device)
         else:
             model_inputs[k] = v
@@ -233,7 +249,7 @@ def generate_speech(
         audio = audio / max_val * 0.95
 
     print(
-        f"[Generation] Final output: shape={audio.shape}, dtype={audio.dtype}, duration={len(audio)/24000:.2f}s"
+        f"[Generation] Final output: shape={audio.shape}, dtype={audio.dtype}, duration={len(audio) / 24000:.2f}s"
     )
     print(
         f"[Generation] Audio stats: min={audio.min():.4f}, max={audio.max():.4f}, std={audio.std():.4f}"
@@ -455,6 +471,7 @@ def launch_app(
     share: bool = False,
     server_name: str = "127.0.0.1",
     server_port: int = 7860,
+    low_vram: bool = False,
     **kwargs,
 ):
     """Launch the Gradio web interface.
@@ -463,8 +480,11 @@ def launch_app(
         share: Create a public share link
         server_name: Server hostname (use "0.0.0.0" for network access)
         server_port: Server port
+        low_vram: Enable low-VRAM mode with CPU↔GPU offloading (~3-4GB VRAM)
         **kwargs: Additional arguments passed to gr.Blocks.launch()
     """
+    global _low_vram_mode
+    _low_vram_mode = low_vram
     app = create_app()
     app.launch(
         share=share,

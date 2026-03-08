@@ -332,8 +332,40 @@ print(f"Confidence: {result.confidence:.1%}")
 | Model | Parameters | Quality | RTF | Speed | VRAM |
 |-------|------------|---------|-----|-------|------|
 | [kugelaudio-0-open](https://huggingface.co/kugelaudio/kugelaudio-0-open) | 7B | Best | 1.00 | 1.0x realtime | ~19GB |
+| [kugelaudio-0-open](https://huggingface.co/kugelaudio/kugelaudio-0-open) (low-VRAM) | 7B | Best | ~0.1 | ~10x slower | ~3-4GB |
 
 *RTF = Real-Time Factor (generation time / audio duration). Lower is faster.*
+
+### Low-VRAM Mode (6GB GPUs)
+
+If you have a GPU with only 6GB of VRAM, you can use the **low-VRAM mode** which offloads model components between CPU and GPU during inference. This uses the same model and produces identical results, but is significantly slower due to constant CPU↔GPU data transfers.
+
+**Requirements:** ~15GB system RAM, 3-4GB VRAM
+
+```bash
+# Web UI with low-VRAM mode
+uv run python start.py ui --low-vram
+
+# Command line with low-VRAM mode
+uv run python start.py generate "Hello world!" --low-vram -o output.wav
+```
+
+**Python API:**
+```python
+from kugelaudio_open import load_model_low_vram, KugelAudioProcessor
+
+# Load model with CPU offloading (~3-4GB VRAM instead of ~19GB)
+model = load_model_low_vram("kugelaudio/kugelaudio-0-open")
+processor = KugelAudioProcessor.from_pretrained("kugelaudio/kugelaudio-0-open")
+
+inputs = processor(text="Hello world!", voice="default", return_tensors="pt")
+
+# generate() handles CPU↔GPU transfers automatically
+outputs = model.generate(**inputs, cfg_scale=3.0)
+processor.save_audio(outputs.speech_outputs[0], "output.wav")
+```
+
+**How it works:** Instead of keeping the full ~19GB model on GPU, the low-VRAM wrapper loads only the active component (language model, diffusion head, or audio decoder) onto GPU at any given time, then moves it back to CPU. Since the largest component (the Qwen2 backbone) is ~14GB in bfloat16, and only needs to be on GPU during its forward pass, the peak VRAM usage drops to ~3-4GB.
 ## Architecture
 
 KugelAudio uses a hybrid AR + Diffusion architecture:
