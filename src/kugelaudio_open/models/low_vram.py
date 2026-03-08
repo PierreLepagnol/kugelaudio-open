@@ -824,9 +824,10 @@ def load_model_quantized(
     # device_map="auto" sometimes misses registered buffers like speech_bias_factor
     # and speech_scaling_factor, causing "doesn't have any device set" errors.
     from accelerate import infer_auto_device_map, init_empty_weights
-    from transformers import AutoConfig
 
-    config = AutoConfig.from_pretrained(model_id, trust_remote_code=True)
+    from ..configs import KugelAudioConfig
+
+    config = KugelAudioConfig.from_pretrained(model_id)
     max_memory = {0: max_gpu, "cpu": "24GiB"}
     with init_empty_weights():
         empty_model = KugelAudioForConditionalGenerationInference(config)
