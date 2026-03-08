@@ -820,33 +820,11 @@ def load_model_quantized(
     else:
         max_gpu = "4GiB"
 
-    # Build device map manually so we can ensure scalar buffers get a device.
-    # device_map="auto" sometimes misses registered buffers like speech_bias_factor
-    # and speech_scaling_factor, causing "doesn't have any device set" errors.
-    from accelerate import infer_auto_device_map, init_empty_weights
-
-    from ..configs import KugelAudioConfig
-
-    config = KugelAudioConfig.from_pretrained(model_id)
-    max_memory = {0: max_gpu, "cpu": "24GiB"}
-    with init_empty_weights():
-        empty_model = KugelAudioForConditionalGenerationInference(config)
-    device_map = infer_auto_device_map(
-        empty_model,
-        max_memory=max_memory,
-        no_split_module_classes=empty_model._no_split_modules or [],
-    )
-    # Ensure scalar buffers that may be missing from the map get placed on GPU
-    for buf_key in ["model.speech_bias_factor", "model.speech_scaling_factor"]:
-        if buf_key not in device_map:
-            device_map[buf_key] = 0
-    del empty_model
-
     model = KugelAudioForConditionalGenerationInference.from_pretrained(
         model_id,
         quantization_config=quantization_config,
-        device_map=device_map,
-        max_memory=max_memory,
+        device_map="auto",
+        max_memory={0: max_gpu, "cpu": "24GiB"},
         torch_dtype=torch.bfloat16,
     )
     model.eval()
