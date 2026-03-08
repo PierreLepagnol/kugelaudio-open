@@ -23,7 +23,12 @@ import torch
 from diffusers.configuration_utils import ConfigMixin, register_to_config
 from diffusers.utils import deprecate
 from diffusers.utils.torch_utils import randn_tensor
-from diffusers.schedulers.scheduling_utils import KarrasDiffusionSchedulers, SchedulerMixin, SchedulerOutput
+from diffusers.schedulers.scheduling_utils import (
+    KarrasDiffusionSchedulers,
+    SchedulerMixin,
+    SchedulerOutput,
+)
+
 
 def betas_for_alpha_bar(
     num_diffusion_timesteps,
@@ -118,6 +123,7 @@ def rescale_zero_terminal_snr(betas):
     betas = 1 - alphas
 
     return betas
+
 
 class DPMSolverMultistepScheduler(SchedulerMixin, ConfigMixin):
     """
@@ -232,10 +238,17 @@ class DPMSolverMultistepScheduler(SchedulerMixin, ConfigMixin):
         if trained_betas is not None:
             self.betas = torch.tensor(trained_betas, dtype=torch.float32)
         elif beta_schedule == "linear":
-            self.betas = torch.linspace(beta_start, beta_end, num_train_timesteps, dtype=torch.float32)
+            self.betas = torch.linspace(
+                beta_start, beta_end, num_train_timesteps, dtype=torch.float32
+            )
         elif beta_schedule == "scaled_linear":
             # this schedule is very specific to the latent diffusion model.
-            self.betas = torch.linspace(beta_start**0.5, beta_end**0.5, num_train_timesteps, dtype=torch.float32) ** 2
+            self.betas = (
+                torch.linspace(
+                    beta_start**0.5, beta_end**0.5, num_train_timesteps, dtype=torch.float32
+                )
+                ** 2
+            )
         elif beta_schedule == "squaredcos_cap_v2" or beta_schedule == "cosine":
             # Glide cosine schedule
             self.betas = betas_for_alpha_bar(num_train_timesteps, alpha_transform_type="cosine")
@@ -271,7 +284,9 @@ class DPMSolverMultistepScheduler(SchedulerMixin, ConfigMixin):
             if algorithm_type == "deis":
                 self.register_to_config(algorithm_type="dpmsolver++")
             else:
-                raise NotImplementedError(f"{algorithm_type} is not implemented for {self.__class__}")
+                raise NotImplementedError(
+                    f"{algorithm_type} is not implemented for {self.__class__}"
+                )
 
         if solver_type not in ["midpoint", "heun"]:
             if solver_type in ["logrho", "bh1", "bh2"]:
@@ -286,13 +301,16 @@ class DPMSolverMultistepScheduler(SchedulerMixin, ConfigMixin):
 
         # setable values
         self.num_inference_steps = None
-        timesteps = np.linspace(0, num_train_timesteps - 1, num_train_timesteps, dtype=np.float32)[::-1].copy()
+        timesteps = np.linspace(0, num_train_timesteps - 1, num_train_timesteps, dtype=np.float32)[
+            ::-1
+        ].copy()
         self.timesteps = torch.from_numpy(timesteps)
         self.model_outputs = [None] * solver_order
         self.lower_order_nums = 0
         self._step_index = None
         self._begin_index = None
-        self.sigmas = self.sigmas.to("cpu")  # to avoid too much CPU/GPU communication
+        if not self.sigmas.is_meta:
+            self.sigmas = self.sigmas.to("cpu")  # to avoid too much CPU/GPU communication
 
     @property
     def step_index(self):
@@ -351,7 +369,9 @@ class DPMSolverMultistepScheduler(SchedulerMixin, ConfigMixin):
         else:
             # Clipping the minimum of all lambda(t) for numerical stability.
             # This is critical for cosine (squaredcos_cap_v2) noise schedule.
-            clipped_idx = torch.searchsorted(torch.flip(self.lambda_t, [0]), self.config.lambda_min_clipped)
+            clipped_idx = torch.searchsorted(
+                torch.flip(self.lambda_t, [0]), self.config.lambda_min_clipped
+            )
             last_timestep = ((self.config.num_train_timesteps - clipped_idx).numpy()).item()
 
             # "linspace", "leading", "trailing" corresponds to annotation of Table 2. of https://arxiv.org/abs/2305.08891
@@ -367,7 +387,10 @@ class DPMSolverMultistepScheduler(SchedulerMixin, ConfigMixin):
                 # creates integer timesteps by multiplying by ratio
                 # casting to int to avoid issues when num_inference_step is power of 3
                 timesteps = (
-                    (np.arange(0, num_inference_steps + 1) * step_ratio).round()[::-1][:-1].copy().astype(np.int64)
+                    (np.arange(0, num_inference_steps + 1) * step_ratio)
+                    .round()[::-1][:-1]
+                    .copy()
+                    .astype(np.int64)
                 )
                 timesteps += self.config.steps_offset
             elif self.config.timestep_spacing == "trailing":
@@ -386,11 +409,15 @@ class DPMSolverMultistepScheduler(SchedulerMixin, ConfigMixin):
 
         if self.config.use_karras_sigmas:
             sigmas = np.flip(sigmas).copy()
-            sigmas = self._convert_to_karras(in_sigmas=sigmas, num_inference_steps=num_inference_steps)
+            sigmas = self._convert_to_karras(
+                in_sigmas=sigmas, num_inference_steps=num_inference_steps
+            )
             timesteps = np.array([self._sigma_to_t(sigma, log_sigmas) for sigma in sigmas]).round()
         elif self.config.use_lu_lambdas:
             lambdas = np.flip(log_sigmas.copy())
-            lambdas = self._convert_to_lu(in_lambdas=lambdas, num_inference_steps=num_inference_steps)
+            lambdas = self._convert_to_lu(
+                in_lambdas=lambdas, num_inference_steps=num_inference_steps
+            )
             sigmas = np.exp(lambdas)
             timesteps = np.array([self._sigma_to_t(sigma, log_sigmas) for sigma in sigmas]).round()
         else:
@@ -420,7 +447,8 @@ class DPMSolverMultistepScheduler(SchedulerMixin, ConfigMixin):
         # add an index counter for schedulers that allow duplicated timesteps
         self._step_index = None
         self._begin_index = None
-        self.sigmas = self.sigmas.to("cpu")  # to avoid too much CPU/GPU communication
+        if not self.sigmas.is_meta:
+            self.sigmas = self.sigmas.to("cpu")  # to avoid too much CPU/GPU communication
 
     # Copied from diffusers.schedulers.scheduling_ddpm.DDPMScheduler._threshold_sample
     def _threshold_sample(self, sample: torch.Tensor) -> torch.Tensor:
@@ -437,7 +465,9 @@ class DPMSolverMultistepScheduler(SchedulerMixin, ConfigMixin):
         batch_size, channels, *remaining_dims = sample.shape
 
         if dtype not in (torch.float32, torch.float64):
-            sample = sample.float()  # upcast for quantile calculation, and clamp not implemented for cpu half
+            sample = (
+                sample.float()
+            )  # upcast for quantile calculation, and clamp not implemented for cpu half
 
         # Flatten sample for doing quantile calculation along each image
         sample = sample.reshape(batch_size, channels * np.prod(remaining_dims))
@@ -449,7 +479,9 @@ class DPMSolverMultistepScheduler(SchedulerMixin, ConfigMixin):
             s, min=1, max=self.config.sample_max_value
         )  # When clamped to min=1, equivalent to standard clipping to [-1, 1]
         s = s.unsqueeze(1)  # (batch_size, 1) because clamp will broadcast along dim=0
-        sample = torch.clamp(sample, -s, s) / s  # "we threshold xt0 to the range [-s, s] and then divide by s"
+        sample = (
+            torch.clamp(sample, -s, s) / s
+        )  # "we threshold xt0 to the range [-s, s] and then divide by s"
 
         sample = sample.reshape(batch_size, channels, *remaining_dims)
         sample = sample.to(dtype)
@@ -1000,7 +1032,9 @@ class DPMSolverMultistepScheduler(SchedulerMixin, ConfigMixin):
             or self.step_index >= len(self.sigmas) - 1  # Safety: prevent OOB access
         )
         lower_order_second = (
-            (self.step_index == len(self.timesteps) - 2) and self.config.lower_order_final and len(self.timesteps) < 15
+            (self.step_index == len(self.timesteps) - 2)
+            and self.config.lower_order_final
+            and len(self.timesteps) < 15
         )
 
         model_output = self.convert_model_output(model_output, sample=sample)
@@ -1010,9 +1044,15 @@ class DPMSolverMultistepScheduler(SchedulerMixin, ConfigMixin):
 
         # Upcast to avoid precision issues when computing prev_sample
         sample = sample.to(torch.float32)
-        if self.config.algorithm_type in ["sde-dpmsolver", "sde-dpmsolver++"] and variance_noise is None:
+        if (
+            self.config.algorithm_type in ["sde-dpmsolver", "sde-dpmsolver++"]
+            and variance_noise is None
+        ):
             noise = randn_tensor(
-                model_output.shape, generator=generator, device=model_output.device, dtype=torch.float32
+                model_output.shape,
+                generator=generator,
+                device=model_output.device,
+                dtype=torch.float32,
             )
         elif self.config.algorithm_type in ["sde-dpmsolver", "sde-dpmsolver++"]:
             noise = variance_noise.to(device=model_output.device, dtype=torch.float32)
@@ -1020,11 +1060,17 @@ class DPMSolverMultistepScheduler(SchedulerMixin, ConfigMixin):
             noise = None
 
         if self.config.solver_order == 1 or self.lower_order_nums < 1 or lower_order_final:
-            prev_sample = self.dpm_solver_first_order_update(model_output, sample=sample, noise=noise)
+            prev_sample = self.dpm_solver_first_order_update(
+                model_output, sample=sample, noise=noise
+            )
         elif self.config.solver_order == 2 or self.lower_order_nums < 2 or lower_order_second:
-            prev_sample = self.multistep_dpm_solver_second_order_update(self.model_outputs, sample=sample, noise=noise)
+            prev_sample = self.multistep_dpm_solver_second_order_update(
+                self.model_outputs, sample=sample, noise=noise
+            )
         else:
-            prev_sample = self.multistep_dpm_solver_third_order_update(self.model_outputs, sample=sample)
+            prev_sample = self.multistep_dpm_solver_third_order_update(
+                self.model_outputs, sample=sample
+            )
 
         if self.lower_order_nums < self.config.solver_order:
             self.lower_order_nums += 1
@@ -1061,8 +1107,10 @@ class DPMSolverMultistepScheduler(SchedulerMixin, ConfigMixin):
             sigma_t = sigma_t.unsqueeze(-1)
         noisy_samples = alpha_t * original_samples + sigma_t * noise
         return noisy_samples
-    
-    def get_velocity(self, original_samples: torch.Tensor, noise: torch.Tensor, timesteps: torch.IntTensor) -> torch.Tensor:
+
+    def get_velocity(
+        self, original_samples: torch.Tensor, noise: torch.Tensor, timesteps: torch.IntTensor
+    ) -> torch.Tensor:
         # alpha_t = self.alpha_t.to(device=original_samples.device, dtype=original_samples.dtype)
         # sigma_t = self.sigma_t.to(device=original_samples.device, dtype=original_samples.dtype)
         alpha_t = self.alpha_t.to(original_samples.device).to(original_samples.dtype)
