@@ -61,7 +61,12 @@ Examples:
     ui_parser.add_argument(
         "--low-vram",
         action="store_true",
-        help="Enable low-VRAM mode (~3-4GB VRAM, slower inference)",
+        help="Enable low-VRAM mode (~3-4GB VRAM, slower inference, needs ~15GB RAM)",
+    )
+    ui_parser.add_argument(
+        "--quantize",
+        action="store_true",
+        help="Load model in 4-bit (NF4) quantization (~4GB VRAM, ~4GB RAM). Requires: pip install bitsandbytes",
     )
 
     # Generate command
@@ -79,7 +84,12 @@ Examples:
     gen_parser.add_argument(
         "--low-vram",
         action="store_true",
-        help="Enable low-VRAM mode (~3-4GB VRAM, slower inference)",
+        help="Enable low-VRAM mode (~3-4GB VRAM, slower inference, needs ~15GB RAM)",
+    )
+    gen_parser.add_argument(
+        "--quantize",
+        action="store_true",
+        help="Load model in 4-bit (NF4) quantization (~4GB VRAM, ~4GB RAM). Requires: pip install bitsandbytes",
     )
 
     # Verify command
@@ -96,14 +106,17 @@ Examples:
         args.port = 7860
         args.model = "kugelaudio/kugelaudio-0-open"
         args.low_vram = False
+        args.quantize = False
 
     if args.command == "ui":
         print("🎙️ Starting KugelAudio Web Interface...")
         print(f"   Host: {args.host}")
         print(f"   Port: {args.port}")
         print(f"   Share: {args.share}")
-        if args.low_vram:
-            print(f"   Mode: Low-VRAM (offloading to CPU, ~3-4GB VRAM)")
+        if args.quantize:
+            print(f"   Mode: 4-bit quantized (NF4, ~4GB VRAM, ~4GB RAM)")
+        elif args.low_vram:
+            print(f"   Mode: Low-VRAM (offloading to CPU, ~3-4GB VRAM, ~15GB RAM)")
         print()
 
         from kugelaudio_open.ui import launch_app
@@ -113,6 +126,7 @@ Examples:
             server_name=args.host,
             server_port=args.port,
             low_vram=args.low_vram,
+            quantize=args.quantize,
         )
 
     elif args.command == "generate":
@@ -122,18 +136,28 @@ Examples:
         device = "cuda" if torch.cuda.is_available() else "cpu"
         dtype = torch.bfloat16 if device == "cuda" else torch.float32
 
+        # Determine loading mode
+        use_quantize = args.quantize and device == "cuda"
+        use_low_vram = args.low_vram and device == "cuda" and not use_quantize
+
         print(f"🎙️ KugelAudio Speech Generation")
         print(f"   Model: {args.model}")
         print(f"   Device: {device}")
-        if args.low_vram:
-            print(f"   Mode: Low-VRAM (offloading to CPU, ~3-4GB VRAM)")
+        if use_quantize:
+            print(f"   Mode: 4-bit quantized (NF4, ~4GB VRAM, ~4GB RAM)")
+        elif use_low_vram:
+            print(f"   Mode: Low-VRAM (offloading to CPU, ~3-4GB VRAM, ~15GB RAM)")
         print(f"   Text: {args.text[:50]}..." if len(args.text) > 50 else f"   Text: {args.text}")
         if args.reference:
             print(f"   Reference: {args.reference}")
         print()
 
         print("Loading model...")
-        if args.low_vram and device == "cuda":
+        if use_quantize:
+            from kugelaudio_open.models import load_model_quantized
+
+            model = load_model_quantized(args.model, device=device)
+        elif use_low_vram:
             from kugelaudio_open.models import load_model_low_vram
 
             model = load_model_low_vram(args.model, device=device)
@@ -147,9 +171,9 @@ Examples:
 
         processor = KugelAudioProcessor.from_pretrained(args.model)
 
-        # Process inputs
+        # Process inputs — move to GPU unless using low-vram offloading (wrapper handles it)
         inputs = processor(text=args.text, voice_prompt=args.reference, return_tensors="pt")
-        if not args.low_vram:
+        if not use_low_vram:
             inputs = {
                 k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in inputs.items()
             }

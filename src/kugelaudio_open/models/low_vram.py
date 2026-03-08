@@ -675,6 +675,24 @@ class LowVRAMInferenceWrapper:
         return self.model._apply_watermark(audio, sample_rate=sample_rate)
 
 
+def _get_available_ram_gb() -> float:
+    """Get available system RAM in GB."""
+    try:
+        import psutil
+
+        return psutil.virtual_memory().available / (1024**3)
+    except ImportError:
+        pass
+    try:
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) / (1024**2)  # kB to GB
+    except (OSError, ValueError):
+        pass
+    return float("inf")  # Unknown, assume plenty
+
+
 def load_model_low_vram(
     model_id: str = "kugelaudio/kugelaudio-0-open",
     device: str = "cuda",
@@ -686,6 +704,7 @@ def load_model_low_vram(
     and wraps it for component-level GPU offloading.
 
     This requires ~15GB of system RAM but only ~3-4GB of VRAM.
+    If you have less than 18GB of RAM, use load_model_quantized() instead.
 
     Args:
         model_id: HuggingFace model ID or local path.
@@ -703,6 +722,14 @@ def load_model_low_vram(
         >>> outputs = wrapper.generate(**inputs, cfg_scale=3.0)
         >>> processor.save_audio(outputs.speech_outputs[0], "output.wav")
     """
+    available_ram = _get_available_ram_gb()
+    if available_ram < 18:
+        logger.warning(
+            f"Only {available_ram:.1f}GB RAM available. "
+            f"low-vram mode needs ~15GB RAM for the bf16 weights on CPU. "
+            f"Consider using --quantize for 4-bit quantization (~4GB RAM + ~4GB VRAM)."
+        )
+
     logger.info(f"Loading model {model_id} for low-VRAM inference...")
     logger.info("Model will be loaded on CPU with bfloat16 precision.")
 
@@ -714,13 +741,93 @@ def load_model_low_vram(
     model.eval()
     model.model.strip_encoders()
 
+    # Auto-disable pin_memory if RAM is tight (pinned pages can't be swapped)
+    if pin_memory and available_ram < 18:
+        logger.warning("Disabling memory pinning due to low available RAM.")
+        pin_memory = False
+
     wrapper = LowVRAMInferenceWrapper(model, device=device, pin_memory=pin_memory)
 
     logger.info("Low-VRAM model ready. VRAM usage: ~3-4GB during generation.")
     return wrapper
 
 
+def load_model_quantized(
+    model_id: str = "kugelaudio/kugelaudio-0-open",
+    device: str = "cuda",
+) -> KugelAudioForConditionalGenerationInference:
+    """Load KugelAudio model with 4-bit quantization (bitsandbytes NF4).
+
+    The quantized model lives entirely on GPU (~3.5GB VRAM for a 7B model)
+    and uses only ~4GB of system RAM during loading.
+
+    This is the best option when you have limited RAM (<16GB) and a GPU
+    with at least 6GB VRAM.
+
+    Requires: pip install bitsandbytes
+
+    Args:
+        model_id: HuggingFace model ID or local path.
+        device: GPU device to use (default: "cuda").
+
+    Returns:
+        KugelAudioForConditionalGenerationInference with quantized weights on GPU.
+
+    Example:
+        >>> from kugelaudio_open.models.low_vram import load_model_quantized
+        >>> model = load_model_quantized("kugelaudio/kugelaudio-0-open")
+        >>> processor = KugelAudioProcessor.from_pretrained("kugelaudio/kugelaudio-0-open")
+        >>> inputs = processor(text="Hello!", voice="default", return_tensors="pt")
+        >>> inputs = {k: v.to("cuda") if hasattr(v, "to") else v for k, v in inputs.items()}
+        >>> outputs = model.generate(**inputs, cfg_scale=3.0)
+        >>> processor.save_audio(outputs.speech_outputs[0], "output.wav")
+    """
+    try:
+        from transformers import BitsAndBytesConfig
+    except ImportError:
+        raise ImportError(
+            "4-bit quantization requires bitsandbytes. Install it with: pip install bitsandbytes"
+        )
+
+    try:
+        import bitsandbytes  # noqa: F401
+    except ImportError:
+        raise ImportError(
+            "4-bit quantization requires bitsandbytes. Install it with: pip install bitsandbytes"
+        )
+
+    logger.info(f"Loading model {model_id} with 4-bit quantization (NF4)...")
+    logger.info("This uses ~3.5GB VRAM and ~4GB RAM — ideal for low-memory systems.")
+
+    quantization_config = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_compute_dtype=torch.bfloat16,
+        bnb_4bit_quant_type="nf4",
+        bnb_4bit_use_double_quant=True,  # nested quantization saves a bit more
+    )
+
+    model = KugelAudioForConditionalGenerationInference.from_pretrained(
+        model_id,
+        quantization_config=quantization_config,
+        device_map=device,
+        torch_dtype=torch.bfloat16,
+    )
+    model.eval()
+    model.model.strip_encoders()
+
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+    # Log memory usage
+    if torch.cuda.is_available():
+        allocated = torch.cuda.memory_allocated() / (1024**3)
+        logger.info(f"Quantized model loaded. GPU memory used: {allocated:.1f}GB")
+
+    return model
+
+
 __all__ = [
     "LowVRAMInferenceWrapper",
     "load_model_low_vram",
+    "load_model_quantized",
 ]

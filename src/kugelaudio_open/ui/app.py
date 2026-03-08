@@ -23,6 +23,7 @@ _processor = None
 _watermark = None
 _current_model_id = None  # Track which model is loaded
 _low_vram_mode = False  # Whether to use low-VRAM offloading
+_quantize_mode = False  # Whether to use 4-bit quantization
 
 
 def get_device():
@@ -100,7 +101,7 @@ def _warmup_model(model, processor=None):
 
 def load_models(model_id: str = "kugelaudio/kugelaudio-0-open"):
     """Load model and processor. Switches model if a different model_id is requested."""
-    global _model, _processor, _watermark, _current_model_id, _low_vram_mode
+    global _model, _processor, _watermark, _current_model_id, _low_vram_mode, _quantize_mode
 
     from kugelaudio_open.processors import KugelAudioProcessor
     from kugelaudio_open.watermark import AudioWatermark
@@ -121,7 +122,14 @@ def load_models(model_id: str = "kugelaudio/kugelaudio-0-open"):
             if device == "cuda":
                 torch.cuda.empty_cache()
 
-        if _low_vram_mode and device == "cuda":
+        if _quantize_mode and device == "cuda":
+            from kugelaudio_open.models import load_model_quantized
+
+            print(f"Loading model {model_id} with 4-bit quantization (NF4)...")
+            _model = load_model_quantized(model_id, device=device)
+            _current_model_id = model_id
+            print(f"Model {model_id} loaded in quantized mode!")
+        elif _low_vram_mode and device == "cuda":
             from kugelaudio_open.models import load_model_low_vram
 
             print(f"Loading model {model_id} in LOW-VRAM mode (CPU offloading)...")
@@ -153,8 +161,8 @@ def load_models(model_id: str = "kugelaudio/kugelaudio-0-open"):
         _processor = KugelAudioProcessor.from_pretrained(model_id)
 
     # Warmup to eliminate first-generation slowness from CUDA kernel compilation
-    # Skip warmup in low-VRAM mode (offloading makes warmup counterproductive)
-    if device == "cuda" and _model is not None and not _low_vram_mode:
+    # Skip warmup in low-VRAM mode and quantized mode (offloading/quantization makes warmup counterproductive)
+    if device == "cuda" and _model is not None and not _low_vram_mode and not _quantize_mode:
         # Check if we need to warmup (only on first load)
         if not getattr(_model, "_warmed_up", False):
             print("Warming up model (this may take a moment)...")
@@ -209,10 +217,11 @@ def generate_speech(
         inputs = processor(text=text.strip(), return_tensors="pt")
 
     # Move tensors to device, keep dicts as-is
-    # In low-VRAM mode, the wrapper handles device placement internally
+    # In low-VRAM mode (non-quantized), the wrapper handles device placement internally
+    needs_manual_move = not _low_vram_mode or _quantize_mode
     model_inputs = {}
     for k, v in inputs.items():
-        if isinstance(v, torch.Tensor) and not _low_vram_mode:
+        if isinstance(v, torch.Tensor) and needs_manual_move:
             model_inputs[k] = v.to(device)
         else:
             model_inputs[k] = v
@@ -472,6 +481,7 @@ def launch_app(
     server_name: str = "127.0.0.1",
     server_port: int = 7860,
     low_vram: bool = False,
+    quantize: bool = False,
     **kwargs,
 ):
     """Launch the Gradio web interface.
@@ -480,11 +490,13 @@ def launch_app(
         share: Create a public share link
         server_name: Server hostname (use "0.0.0.0" for network access)
         server_port: Server port
-        low_vram: Enable low-VRAM mode with CPU↔GPU offloading (~3-4GB VRAM)
+        low_vram: Enable low-VRAM mode with CPU↔GPU offloading (~3-4GB VRAM, ~15GB RAM)
+        quantize: Enable 4-bit quantization (~4GB VRAM, ~4GB RAM). Requires bitsandbytes.
         **kwargs: Additional arguments passed to gr.Blocks.launch()
     """
-    global _low_vram_mode
+    global _low_vram_mode, _quantize_mode
     _low_vram_mode = low_vram
+    _quantize_mode = quantize
     app = create_app()
     app.launch(
         share=share,
