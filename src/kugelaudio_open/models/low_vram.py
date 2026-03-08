@@ -808,14 +808,21 @@ def load_model_quantized(
         llm_int8_enable_fp32_cpu_offload=True,  # allow CPU offload for modules that don't fit GPU
     )
 
-    # Detect available GPU memory and leave ~1.5GB headroom for inference
-    # (KV cache activations, diffusion sampling, audio decode, watermark)
+    # Detect available GPU memory and reserve headroom for quantization overhead
+    # and inference (KV cache, activations, diffusion sampling, audio decode).
+    # During 4-bit weight loading, PyTorch needs temporary GPU memory for
+    # dequantization buffers, so we reserve more on smaller GPUs.
     if torch.cuda.is_available():
         gpu_mem_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
-        max_gpu = f"{max(gpu_mem_gb - 1.5, 2.0):.1f}GiB"
+        # Reserve ~40% on small GPUs (<=8GB), ~25% on larger ones
+        if gpu_mem_gb <= 8:
+            headroom = gpu_mem_gb * 0.4
+        else:
+            headroom = gpu_mem_gb * 0.25
+        max_gpu = f"{max(gpu_mem_gb - headroom, 2.0):.1f}GiB"
         logger.info(
             f"GPU has {gpu_mem_gb:.1f}GB total, limiting model to {max_gpu} "
-            f"(leaving ~1.5GB for inference)"
+            f"(reserving {headroom:.1f}GB for quantization + inference)"
         )
     else:
         max_gpu = "4GiB"
