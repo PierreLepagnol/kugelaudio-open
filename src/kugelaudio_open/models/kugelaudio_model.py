@@ -137,18 +137,9 @@ class KugelAudioModel(KugelAudioPreTrainedModel):
             config.acoustic_vae_dim, lm_config.hidden_size
         ).to(dtype)
 
-        # Scaling factors as frozen parameters (not buffers) so that
-        # accelerate's device_map="auto" assigns them a device correctly.
-        self.speech_scaling_factor = nn.Parameter(torch.tensor(float("nan")), requires_grad=False)
-        self.speech_bias_factor = nn.Parameter(torch.tensor(float("nan")), requires_grad=False)
-
-        # Initialize prediction head for speech generation
-        self.prediction_head = AutoModel.from_config(config.diffusion_head_config).to(dtype)
-
-        # Initialize noise scheduler with SDE-DPM-Solver++ for better quality
-        algorithm_type = getattr(
-            config.diffusion_head_config, "ddpm_algorithm_type", "sde-dpmsolver++"
-        )
+        # Register scaling factors as buffers - use 1D tensors for FSDP compatibility
+        self.register_buffer("speech_scaling_factor", torch.tensor(float("nan")))
+        self.register_buffer("speech_bias_factor", torch.tensor(float("nan")))
         self.noise_scheduler = DPMSolverMultistepScheduler(
             num_train_timesteps=config.diffusion_head_config.ddpm_num_steps,
             beta_schedule=config.diffusion_head_config.ddpm_beta_schedule,

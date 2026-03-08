@@ -808,30 +808,20 @@ def load_model_quantized(
         llm_int8_enable_fp32_cpu_offload=True,  # allow CPU offload for modules that don't fit GPU
     )
 
-    # Detect available GPU memory and reserve headroom for quantization overhead
-    # and inference (KV cache, activations, diffusion sampling, audio decode).
-    # During 4-bit weight loading, PyTorch needs temporary GPU memory for
-    # dequantization buffers, so we reserve more on smaller GPUs.
+    # Place the entire model on GPU. With 4-bit NF4 quantization + double
+    # quantization, a 7B model is ~3.5GB — fits on GPUs with >=6GB VRAM.
+    # Using device_map={"": 0} avoids the module-level splitting that
+    # device_map="auto" does, which fails to assign devices to scalar
+    # buffers (speech_scaling_factor, speech_bias_factor) registered
+    # directly on the model rather than inside a submodule.
     if torch.cuda.is_available():
         gpu_mem_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
-        # Reserve ~40% on small GPUs (<=8GB), ~25% on larger ones
-        if gpu_mem_gb <= 8:
-            headroom = gpu_mem_gb * 0.4
-        else:
-            headroom = gpu_mem_gb * 0.25
-        max_gpu = f"{max(gpu_mem_gb - headroom, 2.0):.1f}GiB"
-        logger.info(
-            f"GPU has {gpu_mem_gb:.1f}GB total, limiting model to {max_gpu} "
-            f"(reserving {headroom:.1f}GB for quantization + inference)"
-        )
-    else:
-        max_gpu = "4GiB"
+        logger.info(f"GPU has {gpu_mem_gb:.1f}GB total")
 
     model = KugelAudioForConditionalGenerationInference.from_pretrained(
         model_id,
         quantization_config=quantization_config,
-        device_map="auto",
-        max_memory={0: max_gpu, "cpu": "24GiB"},
+        device_map={"": 0},
         torch_dtype=torch.bfloat16,
     )
 
