@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 2
 requires-python = ">=3.10"
 resolution-markers = [
     "python_full_version >= '3.13'",
@@ -166,6 +166,23 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/8e/ff/70dca7d7cb1cbc0edb2c6cc0c38b65cba36cccc491eca64cabd5fe7f8670/backports_asyncio_runner-1.2.0.tar.gz", hash = "sha256:a5aa7b2b7d8f8bfcaa2b57313f70792df84e32a2a746f585213373f900b42162", size = 69893, upload-time = "2025-07-02T02:27:15.685Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/a0/59/76ab57e3fe74484f48a53f8e337171b4a2349e506eabe136d7e01d059086/backports_asyncio_runner-1.2.0-py3-none-any.whl", hash = "sha256:0da0a936a8aeb554eccb426dc55af3ba63bcdc69fa1a600b5bb305413a4477b5", size = 12313, upload-time = "2025-07-02T02:27:14.263Z" },
+]
+
+[[package]]
+name = "bitsandbytes"
+version = "0.49.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "numpy", version = "2.3.5", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "packaging" },
+    { name = "torch" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d8/7d/f1fe0992334b18cd8494f89aeec1dcc674635584fcd9f115784fea3a1d05/bitsandbytes-0.49.2-py3-none-macosx_14_0_arm64.whl", hash = "sha256:87be5975edeac5396d699ecbc39dfc47cf2c026daaf2d5852a94368611a6823f", size = 131940, upload-time = "2026-02-16T21:26:04.572Z" },
+    { url = "https://files.pythonhosted.org/packages/29/71/acff7af06c818664aa87ff73e17a52c7788ad746b72aea09d3cb8e424348/bitsandbytes-0.49.2-py3-none-manylinux_2_24_aarch64.whl", hash = "sha256:2fc0830c5f7169be36e60e11f2be067c8f812dfcb829801a8703735842450750", size = 31442815, upload-time = "2026-02-16T21:26:06.783Z" },
+    { url = "https://files.pythonhosted.org/packages/19/57/3443d6f183436fbdaf5000aac332c4d5ddb056665d459244a5608e98ae92/bitsandbytes-0.49.2-py3-none-manylinux_2_24_x86_64.whl", hash = "sha256:54b771f06e1a3c73af5c7f16ccf0fc23a846052813d4b008d10cb6e017dd1c8c", size = 60651714, upload-time = "2026-02-16T21:26:11.579Z" },
+    { url = "https://files.pythonhosted.org/packages/b6/d4/501655842ad6771fb077f576d78cbedb5445d15b1c3c91343ed58ca46f0e/bitsandbytes-0.49.2-py3-none-win_amd64.whl", hash = "sha256:2e0ddd09cd778155388023cbe81f00afbb7c000c214caef3ce83386e7144df7d", size = 55372289, upload-time = "2026-02-16T21:26:16.267Z" },
 ]
 
 [[package]]
@@ -830,6 +847,7 @@ dependencies = [
 
 [package.optional-dependencies]
 all = [
+    { name = "bitsandbytes" },
     { name = "fastapi" },
     { name = "gradio" },
     { name = "uvicorn", extra = ["standard"] },
@@ -839,6 +857,9 @@ dev = [
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "ruff" },
+]
+quantize = [
+    { name = "bitsandbytes" },
 ]
 server = [
     { name = "fastapi" },
@@ -853,6 +874,8 @@ ui = [
 requires-dist = [
     { name = "accelerate", specifier = ">=1.0.0" },
     { name = "audioseal", specifier = ">=0.1.0" },
+    { name = "bitsandbytes", marker = "extra == 'all'", specifier = ">=0.41.0" },
+    { name = "bitsandbytes", marker = "extra == 'quantize'", specifier = ">=0.41.0" },
     { name = "black", marker = "extra == 'dev'", specifier = ">=23.0.0" },
     { name = "diffusers", specifier = ">=0.25.0" },
     { name = "fastapi", marker = "extra == 'all'", specifier = ">=0.100.0" },
@@ -874,7 +897,7 @@ requires-dist = [
     { name = "uvicorn", extras = ["standard"], marker = "extra == 'server'", specifier = ">=0.22.0" },
     { name = "websockets", marker = "extra == 'server'", specifier = ">=11.0.0" },
 ]
-provides-extras = ["dev", "server", "ui", "all"]
+provides-extras = ["dev", "quantize", "server", "ui", "all"]
 
 [[package]]
 name = "lazy-loader"
