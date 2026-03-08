@@ -805,6 +805,7 @@ def load_model_quantized(
         bnb_4bit_compute_dtype=torch.bfloat16,
         bnb_4bit_quant_type="nf4",
         bnb_4bit_use_double_quant=True,  # nested quantization saves a bit more
+        llm_int8_enable_fp32_cpu_offload=True,  # allow CPU offload for modules that don't fit GPU
     )
 
     # Detect available GPU memory and leave ~1.5GB headroom for inference
