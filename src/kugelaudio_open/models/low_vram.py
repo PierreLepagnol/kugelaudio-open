@@ -827,11 +827,32 @@ def load_model_quantized(
     else:
         max_gpu = "4GiB"
 
+    # Compute device map explicitly so we can add scalar buffers that
+    # infer_auto_device_map misses (speech_scaling_factor, speech_bias_factor).
+    from accelerate import infer_auto_device_map, init_empty_weights
+
+    from ..configs import KugelAudioConfig
+
+    config = KugelAudioConfig.from_pretrained(model_id)
+    max_memory = {0: max_gpu, "cpu": "24GiB"}
+    with init_empty_weights():
+        empty_model = KugelAudioForConditionalGenerationInference(config)
+    device_map = infer_auto_device_map(
+        empty_model,
+        max_memory=max_memory,
+        no_split_module_classes=empty_model._no_split_modules or [],
+    )
+    # Scalar buffers registered on KugelAudioModel are not auto-mapped
+    for buf_key in ["model.speech_bias_factor", "model.speech_scaling_factor"]:
+        if buf_key not in device_map:
+            device_map[buf_key] = 0
+    del empty_model
+
     model = KugelAudioForConditionalGenerationInference.from_pretrained(
         model_id,
         quantization_config=quantization_config,
-        device_map="auto",
-        max_memory={0: max_gpu, "cpu": "24GiB"},
+        device_map=device_map,
+        max_memory=max_memory,
         torch_dtype=torch.bfloat16,
     )
     model.eval()
