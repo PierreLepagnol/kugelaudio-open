@@ -835,14 +835,6 @@ def load_model_quantized(
         torch_dtype=torch.bfloat16,
     )
 
-    # Fix scalar buffers left on meta device by device_map="auto".
-    # These are tiny (single float each) and not caught by infer_auto_device_map.
-    for name in ["speech_scaling_factor", "speech_bias_factor"]:
-        buf = getattr(model.model, name, None)
-        if buf is not None and buf.device.type == "meta":
-            setattr(model.model, name, None)
-            model.model.register_buffer(name, torch.tensor(float("nan"), device=device))
-
     model.eval()
     model.model.strip_encoders()
 
