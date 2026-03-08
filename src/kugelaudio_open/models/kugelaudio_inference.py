@@ -130,6 +130,21 @@ class KugelAudioForConditionalGenerationInference(KugelAudioPreTrainedModel, Gen
             num_steps or self.config.diffusion_head_config.ddpm_num_inference_steps
         )
 
+    @staticmethod
+    def _move_cache_to(cache, device, non_blocking=True):
+        """Move a DynamicCache's tensors to a device for KV cache offloading.
+
+        Enables CPU offloading of KV caches to free GPU VRAM during generation,
+        which is critical for running quantized models on 6GB GPUs.
+        """
+        if cache is None:
+            return None
+        if isinstance(cache, DynamicCache):
+            for i in range(len(cache.key_cache)):
+                cache.key_cache[i] = cache.key_cache[i].to(device, non_blocking=non_blocking)
+                cache.value_cache[i] = cache.value_cache[i].to(device, non_blocking=non_blocking)
+        return cache
+
     def _process_speech_inputs(
         self,
         voice_cache: dict,
@@ -383,6 +398,8 @@ class KugelAudioForConditionalGenerationInference(KugelAudioPreTrainedModel, Gen
                     return_dict=True,
                 )
             else:
+                # Move KV cache back to GPU for forward pass
+                past_key_values = self._move_cache_to(past_key_values, device)
                 outputs = self(
                     inputs_embeds=inputs_embeds[:, -1:],
                     attention_mask=attention_mask,
@@ -393,6 +410,9 @@ class KugelAudioForConditionalGenerationInference(KugelAudioPreTrainedModel, Gen
 
             past_key_values = outputs.past_key_values
             logits = outputs.logits[:, -1, :]
+
+            # Offload positive KV cache to CPU to free VRAM
+            past_key_values = self._move_cache_to(past_key_values, "cpu")
 
             # Apply token constraint
             logits = token_constraint(current_ids, logits)
@@ -442,6 +462,9 @@ class KugelAudioForConditionalGenerationInference(KugelAudioPreTrainedModel, Gen
                 if speech_start_indices.dim() == 0:
                     speech_start_indices = speech_start_indices.unsqueeze(0)
 
+                # Move negative cache to GPU for manipulation
+                negative_past_key_values = self._move_cache_to(negative_past_key_values, device)
+
                 for sample_idx in speech_start_indices.tolist():
                     negative_attention_mask[sample_idx, :] = 0
                     negative_attention_mask[sample_idx, -1] = 1
@@ -452,6 +475,9 @@ class KugelAudioForConditionalGenerationInference(KugelAudioPreTrainedModel, Gen
                         v_cache[sample_idx, :, -1, :] = v_cache[sample_idx, :, 0, :].clone()
 
                     negative_ids[sample_idx, -1] = speech_start_id
+
+                # Move negative cache back to CPU
+                negative_past_key_values = self._move_cache_to(negative_past_key_values, "cpu")
 
             # Prepare next input embeddings
             next_inputs_embeds = self.model.get_input_embeddings()(next_tokens).unsqueeze(1)
@@ -473,6 +499,10 @@ class KugelAudioForConditionalGenerationInference(KugelAudioPreTrainedModel, Gen
                             return_dict=True,
                         )
                     else:
+                        # Move negative cache back to GPU for forward pass
+                        negative_past_key_values = self._move_cache_to(
+                            negative_past_key_values, device
+                        )
                         neg_outputs = self(
                             inputs_embeds=negative_inputs_embeds[:, -1:],
                             attention_mask=negative_attention_mask,
@@ -518,6 +548,9 @@ class KugelAudioForConditionalGenerationInference(KugelAudioPreTrainedModel, Gen
 
                         correct_cnt[non_diffusion_indices] += 1
 
+                    # Offload negative KV cache to CPU to free VRAM
+                    negative_past_key_values = self._move_cache_to(negative_past_key_values, "cpu")
+
                     neg_condition = neg_outputs.last_hidden_state[diffusion_indices, -1, :]
                 else:
                     neg_condition = torch.zeros(
@@ -558,11 +591,22 @@ class KugelAudioForConditionalGenerationInference(KugelAudioPreTrainedModel, Gen
                 # Update embeddings for diffusion samples
                 next_inputs_embeds[diffusion_indices] = diffusion_embeds.unsqueeze(1)
 
-            # Update embeddings for next iteration
-            inputs_embeds = torch.cat([inputs_embeds, next_inputs_embeds], dim=1)
+                # Free temporary GPU memory from diffusion sampling and audio decode
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
 
-            # Update negative model
-            negative_inputs_embeds = torch.cat([negative_inputs_embeds, next_inputs_embeds], dim=1)
+            # Update embeddings for next iteration
+            # Only keep the latest token - KV cache stores all previous context,
+            # so accumulating the full history wastes GPU memory
+            inputs_embeds = next_inputs_embeds
+
+            # Update negative model - only accumulate before first negative forward pass
+            if negative_past_key_values is not None:
+                negative_inputs_embeds = next_inputs_embeds
+            else:
+                negative_inputs_embeds = torch.cat(
+                    [negative_inputs_embeds, next_inputs_embeds], dim=1
+                )
             negative_attention_mask = torch.cat(
                 [
                     negative_attention_mask,
@@ -571,6 +615,10 @@ class KugelAudioForConditionalGenerationInference(KugelAudioPreTrainedModel, Gen
                 dim=-1,
             )
             negative_ids = torch.cat([negative_ids, next_tokens.unsqueeze(-1)], dim=-1)
+
+        # Free GPU memory before watermark processing (AudioSeal model loading)
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
         # Concatenate audio chunks with normalization
         speech_outputs = []
@@ -645,6 +693,9 @@ class KugelAudioForConditionalGenerationInference(KugelAudioPreTrainedModel, Gen
 
         # Load watermark generator (cached after first use)
         if not hasattr(self, "_wm_generator"):
+            # Free GPU memory before loading AudioSeal model
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
             self._wm_generator = AudioSeal.load_generator("audioseal_wm_16bits").to(device)
             self._wm_generator.eval()
 
